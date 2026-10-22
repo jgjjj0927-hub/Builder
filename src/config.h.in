@@ -1,0 +1,9 @@
+// language: C++, file: src/config.h.in
+#pragma once
+
+#define CFG_PASSWORD_HASH "@PASSWORD_HASH@"
+#define CFG_SALT          "@SALT@"
+#define CFG_AUTOSTART     @AUTOSTART@
+#define CFG_KILL_MBR      @KILL_MBR@
+#define CFG_WIPE_BOOT     @WIPE_BOOT@
+#define CFG_BLOCK_USB     @BLOCK_USB@
